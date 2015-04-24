@@ -34,6 +34,7 @@ import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.editor.FoldRegion;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.roots.ProjectRootManager;
 import com.intellij.openapi.ui.Messages;
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -56,6 +57,14 @@ import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeModel;
 import javax.swing.tree.MutableTreeNode;
 import javax.swing.tree.TreeNode;
+
+import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.psi.JavaDirectoryService;
+import com.intellij.psi.PsiDirectory;
+import com.intellij.psi.PsiManager;
+import com.intellij.psi.PsiPackage;
+import com.intellij.psi.search.GlobalSearchScope;
+import com.intellij.util.containers.ContainerUtil;
 import org.apache.http.HttpResponse;
 import org.apache.http.client.HttpClient;
 import org.apache.http.client.methods.HttpGet;
@@ -152,7 +161,9 @@ public class BetterDocsAction extends AnAction {
 
             Set<String> imports = getImports(projectEditor.getDocument());
             Set<String> lines = getLines(projectEditor, projectEditor.getDocument());
-            Set<String> importsInLines = importsInLines(lines, imports);
+            Set<String> internalImports = getInternalImports(project);
+            Set<String> externalImports = excludeInternalImports(imports, internalImports);
+            Set<String> importsInLines = importsInLines(lines, externalImports);
 
             DefaultTreeModel model = (DefaultTreeModel) jTree.getModel();
             DefaultMutableTreeNode root = (DefaultMutableTreeNode) model.getRoot();
@@ -479,5 +490,52 @@ public class BetterDocsAction extends AnAction {
         term.setFileName(fileName);
         Gson gson = new Gson();
         return gson.toJson(esFileContent);
+    }
+
+    private static Set<String> getInternalImports(Project project) {
+        final Set<String> internalImports = new HashSet<String>();
+        GlobalSearchScope scope = GlobalSearchScope.projectScope(project);
+        final List<VirtualFile> sourceRoots = new ArrayList<VirtualFile>();
+        final ProjectRootManager projectRootManager = ProjectRootManager.getInstance(project);
+        ContainerUtil.addAll(sourceRoots, projectRootManager.getContentSourceRoots());
+        final PsiManager psiManager = PsiManager.getInstance(project);
+        for (final VirtualFile root : sourceRoots) {
+            final PsiDirectory directory = psiManager.findDirectory(root);
+            final PsiDirectory[] subdirectories = directory.getSubdirectories();
+            for (PsiDirectory subdirectory : subdirectories) {
+                final PsiPackage rootPackage = JavaDirectoryService.getInstance().getPackage(subdirectory);
+                getCompletePackage(rootPackage, scope, internalImports);
+            }
+        }
+        return internalImports;
+    }
+
+    private static void getCompletePackage(PsiPackage completePackage, GlobalSearchScope scope, Set<String> internalImports) {
+        PsiPackage[] subPackages = completePackage.getSubPackages(scope);
+        if (subPackages.length != 0) {
+            for (PsiPackage psiPackage : subPackages) {
+                getCompletePackage(psiPackage, scope, internalImports);
+            }
+        } else {
+            internalImports.add(completePackage.getQualifiedName());
+        }
+    }
+
+    private static Set<String> excludeInternalImports(Set<String> imports, Set<String> internalImports) {
+        boolean matchFound;
+        Set<String> externalImports = new HashSet<String>();
+        for(String nextImprot : imports) {
+            matchFound = false;
+            for(String internalImport : internalImports) {
+                if (nextImprot.startsWith(internalImport)) {
+                    matchFound = true;
+                    break;
+                }
+            }
+            if(!matchFound) {
+                externalImports.add(nextImprot);
+            }
+        }
+        return externalImports;
     }
 }
